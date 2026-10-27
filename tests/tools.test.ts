@@ -58,12 +58,46 @@ describe("profile reads", () => {
     expect(raw.data.focus.id).toBe("profile-1");
   });
 
+  it("get_ancestors climbs immediate-family when Geni has not approved the app", async () => {
+    const refused = json({ error: { type: "ApiException", message: "Approved client app required" } }, 403);
+    const route = (c: { url: URL }) => {
+      if (c.url.pathname.endsWith("/ancestors")) return refused.clone();
+      const id = c.url.pathname.match(/(profile-\d+)\/immediate-family/)?.[1];
+      return id ? json({ ...ancestorsResponse, focus: { id } }) : undefined;
+    };
+    const { call, calls } = await setup([route]);
+    const res = await call("get_ancestors", { profile_id: "1", generations: 2 });
+    expect(res.data.method).toMatch(/walked/);
+    expect(res.data.ancestors.map((r: { ahnentafel: number }) => r.ahnentafel)).toEqual([1, 2, 3, 4, 5]);
+    expect(res.data.missing).toEqual([6, 7]);
+    expect(calls.map((c) => c.url.pathname.replace("/api/", ""))).toEqual([
+      "profile-1/ancestors",
+      "profile-1/immediate-family",
+      "profile-2/immediate-family",
+      "profile-3/immediate-family",
+    ]);
+    const capped = await call("get_ancestors", { profile_id: "1", generations: 10 });
+    expect(capped.data).toMatchObject({ generations: 6, note: expect.stringMatching(/Capped/) });
+  });
+
+  it("get_ancestors passes on other errors", async () => {
+    const { call } = await setup([on("GET", "profile-1/ancestors", () => json({ error: "boom" }, 500))]);
+    expect((await call("get_ancestors", { profile_id: "1" })).isError).toBe(true);
+  });
+
   it("get_immediate_family lists relatives with unions", async () => {
     const { call } = await setup([on("GET", "profile-2/immediate-family", () => json(ancestorsResponse))]);
     const res = await call("get_immediate_family", { profile_id: "profile-2" });
     expect(res.data.parents.map((p: { id: string }) => p.id).sort()).toEqual(["profile-4", "profile-5"]);
     expect(res.data.partners).toEqual([{ union: "union-10", id: "profile-3", name: "Anna de Villiers", gender: "female" }]);
     expect(res.data.children[0]).toMatchObject({ union: "union-10", id: "profile-1" });
+  });
+
+  it("get_immediate_family follows Geni's numeric focus id when asked by GUID", async () => {
+    const { call } = await setup([on("GET", "profile-g6000000000000000001/immediate-family", () => json(ancestorsResponse))]);
+    const res = await call("get_immediate_family", { profile_id: "6000000000000000001" });
+    expect(res.data.focus.id).toBe("profile-1");
+    expect(res.data.parents.map((p: { id: string }) => p.id).sort()).toEqual(["profile-2", "profile-3"]);
   });
 
   it("get_descendants walks the tree and respects limits", async () => {

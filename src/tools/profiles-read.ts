@@ -1,9 +1,10 @@
 // Read-only profile tools: lookups, family, ancestors, descendants, paths, search.
 
 import { z } from "zod";
+import { GeniApiError } from "../http/geni-client.js";
 import { profileId } from "../ids.js";
 import { buildAhnentafel } from "../tree/ahnentafel.js";
-import { FamilyGraph, type FamilyResponse } from "../tree/graph.js";
+import { FamilyGraph, type FamilyResponse, type GeniNode } from "../tree/graph.js";
 import { dropEmpty, summarizeProfile } from "../tree/summarize.js";
 import { checkCancelled, FieldsParam, PageFields, pageQuery, tool, type ToolContext } from "./shared.js";
 
@@ -22,11 +23,52 @@ const ProfileIdParam = z
   .describe("Profile id: 'profile-123', a Geni ID like '6999999999999999999', 'g6000…', or a geni.com profile URL");
 
 const MAX_PATH_WAIT_SECONDS = 60;
+// Geni only serves profile/ancestors to apps it has approved; others climb immediate-family instead.
+const UNAPPROVED_APP = /approved client app required/i;
+const WALK_MAX_GENERATIONS = 6;
 const PATH_POLL_INTERVAL_MS = 5_000;
 
 /** Strips the type prefix for the `ids=` batch parameter. */
 function batchId(id: string): string {
   return id.replace(/^profile-/, "");
+}
+
+/** The id Geni keys this person by: it answers a GUID request with numeric ids, so fall back to its focus. */
+function nodeIdFor(graph: FamilyGraph, requested: string): string {
+  return graph.profiles.has(requested) ? requested : (graph.focusId ?? requested);
+}
+
+function mergeNodes(into: Record<string, GeniNode>, nodes: Record<string, GeniNode>): void {
+  for (const [key, node] of Object.entries(nodes)) {
+    const prev = into[key];
+    into[key] = prev ? { ...prev, ...node, edges: { ...prev.edges, ...node.edges } } : node;
+  }
+}
+
+/** Builds an ancestors-shaped response from one immediate-family request per person. */
+async function walkAncestors(ctx: ToolContext, root: string, gens: number): Promise<FamilyResponse> {
+  const nodes: Record<string, GeniNode> = {};
+  let focus: GeniNode | undefined;
+  const seen = new Set<string>();
+  let frontier = [root];
+  for (let depth = 0; depth < gens && frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      checkCancelled(ctx);
+      const response = await ctx.client.get<FamilyResponse>(`${id}/immediate-family`, {
+        only_ids: true,
+        fields: SUMMARY_FIELDS,
+      });
+      mergeNodes(nodes, response.nodes ?? {});
+      const graph = new FamilyGraph(response);
+      const self = nodeIdFor(graph, id);
+      if (depth === 0) focus = response.focus;
+      seen.add(self);
+      next.push(...graph.parents(self).filter((p) => !seen.has(p)));
+    }
+    frontier = [...new Set(next)];
+  }
+  return { focus, nodes };
 }
 
 export async function fetchFamily(ctx: ToolContext, id: string): Promise<FamilyGraph> {
@@ -95,7 +137,8 @@ export const profileReadTools = [
     input: { profile_id: ProfileIdParam },
     handler: async ({ profile_id }, ctx) => {
       const id = profileId(profile_id);
-      return describeFamily(await fetchFamily(ctx, id), id);
+      const graph = await fetchFamily(ctx, id);
+      return describeFamily(graph, nodeIdFor(graph, id));
     },
   }),
 
@@ -105,21 +148,38 @@ export const profileReadTools = [
     description:
       "Ancestors of a profile for up to 20 generations in one request, numbered Ahnentafel-style " +
       "(1 = the person, 2 = father, 3 = mother, 4 = paternal grandfather, ...). 'missing' lists the " +
-      "numbers whose child is on Geni but who are not. Use raw: true for Geni's unprocessed response.",
+      "numbers whose child is on Geni but who are not. Use raw: true for Geni's unprocessed response. " +
+      `If Geni has not approved this app for the ancestors endpoint, the tool climbs the tree one ` +
+      `person per request instead (at most ${WALK_MAX_GENERATIONS} generations, about 2 s per person).`,
     input: {
       profile_id: ProfileIdParam,
       generations: z.number().int().min(1).max(20).optional().describe("Generations above the person (default 5)"),
       raw: z.boolean().optional(),
     },
     handler: async ({ profile_id, generations, raw }, ctx) => {
-      const gens = generations ?? 5;
-      const response = await ctx.client.get<FamilyResponse>(`${profileId(profile_id)}/ancestors`, {
-        generations: gens,
-        only_ids: true,
-      });
+      const requested = generations ?? 5;
+      const id = profileId(profile_id);
+      let gens = requested;
+      let method = "ancestors endpoint";
+      let response: FamilyResponse;
+      try {
+        response = await ctx.client.get<FamilyResponse>(`${id}/ancestors`, { generations: gens, only_ids: true });
+      } catch (err) {
+        if (!(err instanceof GeniApiError) || !UNAPPROVED_APP.test(err.message)) throw err;
+        gens = Math.min(requested, WALK_MAX_GENERATIONS);
+        method = "walked immediate-family (app not approved for the ancestors endpoint)";
+        response = await walkAncestors(ctx, id, gens);
+      }
       if (raw) return response;
       const { rows, missing } = buildAhnentafel(new FamilyGraph(response), gens + 1);
-      return { generations: gens, count: rows.length, missing, ancestors: rows };
+      return dropEmpty({
+        generations: gens,
+        method,
+        note: gens < requested ? `Capped at ${gens} generations because each person costs one request.` : undefined,
+        count: rows.length,
+        missing,
+        ancestors: rows,
+      });
     },
   }),
 
@@ -152,14 +212,16 @@ export const profileReadTools = [
             break;
           }
           const graph = await fetchFamily(ctx, parent);
-          if (gen === 0) people.push({ generation: 0, ...summarizeProfile(graph.profiles.get(parent) ?? { id: parent }) });
-          for (const child of graph.children(parent)) {
+          const self = nodeIdFor(graph, parent);
+          seen.add(self);
+          if (gen === 0) people.push({ generation: 0, ...summarizeProfile(graph.profiles.get(self) ?? { id: self }) });
+          for (const child of graph.children(self)) {
             if (seen.has(child)) continue;
             seen.add(child);
             next.push(child);
             people.push({
               generation: gen + 1,
-              parent: parent,
+              parent: self,
               ...summarizeProfile(graph.profiles.get(child) ?? { id: child }),
             });
           }

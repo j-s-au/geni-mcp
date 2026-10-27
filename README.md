@@ -66,7 +66,7 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
 | `get_profile` | read | Get a Geni profile |
 | `get_profiles` | read | Get up to 50 profiles |
 | `get_immediate_family` | read | Parents, siblings, partners, children, union ids |
-| `get_ancestors` | read | Ancestors (Ahnentafel), up to 20 generations |
+| `get_ancestors` | read | Ancestors (Ahnentafel), up to 20 generations (6 when walking, see below) |
 | `get_descendants` | read | Descendants (one request per person) |
 | `get_relationship_path` | read | Relationship and linking chain (no notifications) |
 | `compare_profiles` | read | Immediate families of two profiles side by side |
@@ -111,12 +111,17 @@ Endpoints deliberately left out: `user/add`, which creates Geni accounts.
 
 ## Things the Geni docs leave open
 
-These assumptions are based on the docs and should be confirmed on first live use. See the Geni developer docs at https://www.geni.com/platform/developer/help.
+Confirmed live on 28 Oct 2026:
+- `immediate-family` returns `{focus, nodes}`, with profiles and unions linked by `edges` (`rel: partner | child`) on both sides. Nodes are keyed by numeric id even when you ask by GUID.
+- Batch `ids=` returns `{results: [...]}`, not in request order.
+- Errors look like `{error: {type, message}}`, e.g. 403 `ApiException: Approved client app required`.
+- **`profile/ancestors` needs an app approved by Geni.** Until then `get_ancestors` climbs `immediate-family` one person per request, capped at 6 generations.
+- Geni's firewall blocks a `localhost` redirect URI (see Setup).
 
-- The REST error format and the HTTP status for throttling are undocumented. Errors are classified defensively.
-- The `{focus, nodes}` structure returned by ancestors and immediate-family is undocumented. The parser reads `edges` with `rel: partner | child` from both sides.
+Still assumptions, to be confirmed on first use: See the Geni developer docs at https://www.geni.com/platform/developer/help.
+
+- The HTTP status for throttling is undocumented. Errors are classified defensively.
 - Dates on document, photo and video writes are sent as a JSON-serialised Date object, as the docs describe.
-- The batch `ids=` response shape is assumed to be `{results: [...]}`. Anything else is returned as-is.
 - `merge_profiles` does not document which profile survives.
 - `append_about_note` must replace the whole About text, because Geni has no append. It re-reads the text just before writing and refuses if it changed, or if About text exists only in another language.
 - `profile/search` documents only a `names` parameter.
