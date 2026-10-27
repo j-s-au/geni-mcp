@@ -515,7 +515,7 @@ describe("auth tools", () => {
     const { call, config } = await setup([], { loggedIn: false });
     Object.assign(config, { redirectUri: "https://example.com/cb" });
     const res = await call("auth_start");
-    expect(res.data.listener_error).toMatch(/localhost/);
+    expect(res.data.listener_error).toMatch(/http:\/\//);
     expect(res.data.next_step).toMatch(/auth_complete/);
   });
 });

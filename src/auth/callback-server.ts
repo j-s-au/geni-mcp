@@ -13,8 +13,12 @@ const PAGE = (title: string, body: string) =>
   `<!doctype html><meta charset="utf-8"><title>${title}</title>` +
   `<body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><h1>${title}</h1><p>${body}</p></body>`;
 
+// Loopback only, whatever hostname the redirect URI uses. Geni's firewall rejects
+// "localhost" in redirect_uri, so the URI names a made-up host that /etc/hosts maps here.
+const LISTEN_HOST = "127.0.0.1";
+
 /**
- * Starts listening on the redirect URI's host and port. Resolves with the first
+ * Starts listening on 127.0.0.1 at the redirect URI's port. Resolves with the first
  * request that carries a code with the expected state, or Geni's denial
  * (status/message, no code), then closes. Other requests are answered and
  * ignored, so a stray local request cannot end the login. Times out after `timeoutMs`.
@@ -25,8 +29,8 @@ export function waitForCallback(
   expectedState?: string,
 ): { ready: Promise<void>; result: Promise<CallbackResult>; close: () => void } {
   const target = new URL(redirectUri);
-  if (target.protocol !== "http:" || !["localhost", "127.0.0.1"].includes(target.hostname)) {
-    throw new Error(`Automatic login needs a http://localhost redirect URI, got ${redirectUri}`);
+  if (target.protocol !== "http:") {
+    throw new Error(`Automatic login needs a http:// redirect URI, got ${redirectUri}`);
   }
 
   let server: Server | undefined;
@@ -69,7 +73,7 @@ export function waitForCallback(
       resolveResult({ code, state, error });
     });
     server.once("error", reject);
-    server.listen(Number(target.port || 80), target.hostname, () => resolve());
+    server.listen(Number(target.port || 80), LISTEN_HOST, () => resolve());
   });
 
   timer = setTimeout(() => {

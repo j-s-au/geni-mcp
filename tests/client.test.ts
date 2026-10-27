@@ -175,12 +175,19 @@ describe("callback server", () => {
     await expect(listener.result).resolves.toEqual({ code: "abc", state: "s", error: undefined });
   });
 
-  it("reports a denied login and refuses non-local redirect URIs", async () => {
+  it("reports a denied login and refuses https redirect URIs", async () => {
     const listener = waitForCallback("http://127.0.0.1:38912/cb", 5000);
     await listener.ready;
     await fetch("http://127.0.0.1:38912/cb?status=unauthorized&message=user+canceled");
     expect((await listener.result).error).toBe("user canceled");
-    expect(() => waitForCallback("https://example.com/cb", 1000)).toThrow(/localhost/);
+    expect(() => waitForCallback("https://example.com/cb", 1000)).toThrow(/http:\/\//);
+  });
+
+  it("listens on loopback for a made-up redirect hostname", async () => {
+    const listener = waitForCallback("http://geni-mcp.test:38915/oauth/callback", 5000);
+    await listener.ready;
+    await fetch("http://127.0.0.1:38915/oauth/callback?code=abc");
+    await expect(listener.result).resolves.toMatchObject({ code: "abc" });
   });
 
   it("ignores a denial or code that does not carry the login's state", async () => {

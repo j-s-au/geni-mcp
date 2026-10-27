@@ -42,7 +42,8 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
 
 ## Setup
 
-1. Register an app at <https://www.geni.com/platform/developer/apps> with callback `http://localhost:3000/oauth/callback`.
+1. Register an app at <https://www.geni.com/platform/developer/apps> with callback `http://geni-mcp.test:3000/oauth/callback`.
+   - Geni's firewall blocks redirect URIs containing `localhost` (and can block your IP for 24 hours), so use a made-up hostname and map it to this computer: `echo "127.0.0.1 geni-mcp.test" | sudo tee -a /etc/hosts`.
 2. Install and build:
    ```bash
    git clone https://github.com/j-s-au/geni-mcp.git ~/geni-mcp
@@ -50,8 +51,8 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
    ```
 3. Configure it: `cp env.example ~/.config/geni-mcp/env && chmod 600 ~/.config/geni-mcp/env`, then fill in the app id and secret.
 4. Register the server with Claude Code: `claude mcp add geni -s user -- ~/geni-mcp/run-local.sh`
-5. In Claude, run `auth_start` and open the URL. A local listener on port 3000 catches Geni's redirect and saves the token to `~/.config/geni-mcp/tokens.json` (mode 600). The token refreshes automatically.
-   - If the listener can't start, paste the redirect URL into `auth_complete` instead.
+5. In Claude, run `auth_start` and open the URL. A listener on 127.0.0.1, port 3000, catches Geni's redirect and saves the token to `~/.config/geni-mcp/tokens.json` (mode 600). The token refreshes automatically.
+   - If the listener can't start, or there is no hosts entry (the browser then shows an error page), paste the redirect URL into `auth_complete` instead.
 
 ## Tools
 

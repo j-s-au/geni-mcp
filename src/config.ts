@@ -61,7 +61,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     clientId,
     clientSecret,
-    redirectUri: env.GENI_REDIRECT_URI ?? "http://localhost:3000/oauth/callback",
+    redirectUri: env.GENI_REDIRECT_URI ?? "http://geni-mcp.test:3000/oauth/callback",
     writeLevel: parseWriteLevel(env.GENI_WRITE_LEVEL),
     minIntervalMs: Math.max(MIN_INTERVAL_FLOOR_MS, parseNumber("GENI_MIN_INTERVAL_MS", env.GENI_MIN_INTERVAL_MS, 2000)),
     maxRetries: parseNumber("GENI_MAX_RETRIES", env.GENI_MAX_RETRIES, 3),
