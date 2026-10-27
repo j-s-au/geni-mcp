@@ -100,6 +100,22 @@ describe("rate limiter", () => {
     expect(slept).toEqual([10_000]);
   });
 
+  it("spreads calls evenly over the window Geni advertises, before any run out", async () => {
+    const { clock, slept } = fakeClock();
+    const limiter = new RateLimiter(2000, clock);
+    limiter.observe(new Headers({ "X-API-Rate-Limit": "4", "X-API-Rate-Remaining": "3", "X-API-Rate-Window": "10" }));
+    await Promise.all([1, 2, 3].map((n) => limiter.schedule(async () => n)));
+    expect(slept).toEqual([2500, 2500]);
+  });
+
+  it("never goes below the minimum interval when Geni allows more", async () => {
+    const { clock, slept } = fakeClock();
+    const limiter = new RateLimiter(2000, clock);
+    limiter.observe(new Headers({ "X-API-Rate-Limit": "40", "X-API-Rate-Remaining": "39", "X-API-Rate-Window": "10" }));
+    await Promise.all([1, 2].map((n) => limiter.schedule(async () => n)));
+    expect(slept).toEqual([2000]);
+  });
+
   it("sees the previous call's rate headers before starting the next, even when it answers slowly", async () => {
     const { clock, slept } = fakeClock();
     const limiter = new RateLimiter(2000, clock);

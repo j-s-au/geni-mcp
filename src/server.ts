@@ -26,7 +26,7 @@ export const ALL_TOOLS: readonly ToolDef[] = [
 
 const INSTRUCTIONS = `Geni.com genealogy API (the shared World Family Tree).
 - Start with auth_status; if not logged in, run auth_start and give the user the URL.
-- Requests are deliberately slow (one every ~2 s). Prefer get_ancestors (20 generations in one call) and get_profiles (50 at once) over many single lookups.
+- Requests are deliberately slow (at least ~2 s apart, longer when Geni's rate headers say so). Prefer get_ancestors (20 generations in one call) and get_profiles (50 at once) over many single lookups.
 - Geni is a shared tree: before any write, show the user the change (dry_run where available) and get approval. Structural changes (add_relative, add_to_union, create_profile, merge, delete) also need confirm: true and GENI_WRITE_LEVEL=full. Uploading a local file also needs confirm: true.
 - Profile ids can be given as profile-123, a Geni ID like 6999999999999999999, or a geni.com URL.`;
 

@@ -1,6 +1,6 @@
-// Serialises API calls and spaces them out. Geni allows 40 requests per 10 s
-// for user tokens, but this server is deliberately far slower by default and
-// also honours the X-API-Rate-* headers Geni returns.
+// Serialises API calls and spaces them out. Geni's rate_limits page gives no
+// numbers and says limits change without notice, so the spacing follows the
+// X-API-Rate-* headers Geni returns, never faster than the configured minimum.
 
 export interface RateState {
   readonly limit?: number;
@@ -56,8 +56,11 @@ export class RateLimiter {
 
   private nextWait(): number {
     const now = this.clock.now();
-    let wait = Math.max(this.lastStart + this.minIntervalMs, this.pausedUntil) - now;
-    const { remaining, windowSeconds, observedAt } = this.state;
+    const { limit, remaining, windowSeconds, observedAt } = this.state;
+    // Spread calls over the advertised window so it never runs dry.
+    const advertisedMs = limit && limit > 0 && windowSeconds ? (windowSeconds * 1000) / limit : 0;
+    const spacing = Math.max(this.minIntervalMs, advertisedMs);
+    let wait = Math.max(this.lastStart + spacing, this.pausedUntil) - now;
     if (remaining !== undefined && remaining <= 0 && observedAt !== undefined) {
       const windowEnd = observedAt + (windowSeconds ?? 10) * 1000;
       wait = Math.max(wait, windowEnd - now);
