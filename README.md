@@ -32,13 +32,13 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
 
 - **Structural tools** also refuse to run without `confirm: true` on each call.
 - **Every write** is appended to `~/.config/geni-mcp/audit.jsonl` with a timestamp, the target, the request, and the earlier values where they were fetched. Uploaded file contents are never logged.
-- **Uploads** come only from the upload folders (`GENI_UPLOAD_DIRS`, default `~/Documents`). Only known image, PDF, text and video types are accepted. Hidden files and the server's config folder are always refused, so text on a Geni profile can't trick Claude into publishing your private files.
+- **Uploads** of a local file need `confirm: true`; without it the tool names the file and its size and sends nothing. Files come only from the upload folders (`GENI_UPLOAD_DIRS`, default `~/Documents`). Only known image, PDF, text and video types are accepted. Hidden files and the server's config folder are always refused, so text on a Geni profile can't trick Claude into publishing your private files.
 - **Pacing:**
   - Requests are serialised and spaced 2 s apart by default; Geni allows 40 per 10 s.
   - The server honours Geni's `X-API-Rate-*` headers, and pauses the whole queue when throttled.
   - Every request times out after 60 s.
 - **Blocks:** if Geni returns an IP-block page, the server refuses all further calls for 30 minutes.
-- **`geni_raw_get`** refuses write endpoints (add, update, delete, merge, tag and similar).
+- **`geni_raw_get`** refuses write endpoints (add, update, delete, merge, tag and similar), and any path containing `%`, `;`, whitespace or control characters, which could hide one.
 
 ## Setup
 
@@ -84,9 +84,9 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
 | `add_to_union` | full + confirm | Add a child or partner to a couple |
 | `get_media` | read | Get documents, photos, videos or albums |
 | `media_related` | read | Comments, tagged profiles, projects or album photos |
-| `create_document` | safe | Create a document (source) |
-| `upload_media` | safe | Upload a photo or video |
-| `set_profile_photo` | safe | Set a profile's main photo |
+| `create_document` | safe (+ confirm for a file) | Create a document (source) |
+| `upload_media` | safe + confirm | Upload a photo or video |
+| `set_profile_photo` | safe (+ confirm for a file) | Set a profile's main photo |
 | `update_media` | safe | Update a document, photo or video |
 | `tag_media` | safe | Tag or untag profiles |
 | `add_comment` | safe | Comment on a document, photo or video |

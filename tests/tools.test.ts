@@ -242,8 +242,14 @@ describe("unions", () => {
     await call("update_union", { union_id: "5", marriage: { location: { place_name: "Paarl" } } });
     expect(formOf(calls.at(-1)!)).toEqual({ "marriage[location][place_name]": "Paarl" });
     expect((await call("update_union", { union_id: "5" })).text).toMatch(/marriage and\/or divorce/);
-    await call("add_to_union", { union_id: "5", role: "child", first_name: "Kid", nicknames: ["K"], confirm: true });
+    await call("add_to_union", { union_id: "5", role: "child", first_name: "Kid", confirm: true });
     expect(formOf(calls.at(-1)!)).toEqual({ first_name: "Kid" });
+    const posts = calls.length;
+    for (const extra of [{ nicknames: ["K"] }, { names: { af: { first_name: "Jan" } } }, { title: "Ds." }]) {
+      const res = await call("add_to_union", { union_id: "5", role: "child", first_name: "Kid", confirm: true, ...extra });
+      expect(res.text).toMatch(/does not accept names, nicknames or title/);
+    }
+    expect(calls).toHaveLength(posts);
   });
 });
 
@@ -259,9 +265,12 @@ describe("media", () => {
 
     const file = join(uploadDir, "scan.jpg");
     writeFileSync(file, Buffer.from("img"));
-    await call("create_document", { title: "Scan", file_path: file });
+    const unconfirmed = await call("create_document", { title: "Scan", file_path: file });
+    expect(unconfirmed.text).toMatch(/upload scan\.jpg \(3 bytes\).*confirm: true/);
+    expect(calls).toHaveLength(1);
+    await call("create_document", { title: "Scan", file_path: file, confirm: true });
     expect(formOf(calls[1]!)).toMatchObject({ file: Buffer.from("img").toString("base64"), file_name: "scan.jpg", content_type: "image/jpeg" });
-    await call("create_document", { title: "Scan", file_path: file, profile_id: "1" });
+    await call("create_document", { title: "Scan", file_path: file, profile_id: "1", confirm: true });
     expect(formOf(calls[2]!).file_name).toBeUndefined();
     expect(JSON.stringify(auditLines())).not.toContain(Buffer.from("img").toString("base64"));
     expect((await call("create_document", { title: "x", file_path: "relative.jpg" })).text).toMatch(/absolute/);
@@ -275,12 +284,15 @@ describe("media", () => {
     ]);
     const file = join(uploadDir, "pic.png");
     writeFileSync(file, Buffer.from("png"));
-    await call("upload_media", { kind: "photo", file_path: file, title: "Grave", album_id: "3", date: { year: 1990 } });
+    expect((await call("upload_media", { kind: "photo", file_path: file, title: "Grave" })).text).toMatch(/confirm: true/);
+    expect((await call("set_profile_photo", { profile_id: "1", file_path: file })).text).toMatch(/confirm: true/);
+    expect(calls).toHaveLength(0);
+    await call("upload_media", { kind: "photo", file_path: file, title: "Grave", album_id: "3", date: { year: 1990 }, confirm: true });
     const body = calls[0]!.body as FormData;
     expect(body.get("title")).toBe("Grave");
     expect(body.get("album_id")).toBe("3");
     expect((body.get("file") as File).name).toBe("pic.png");
-    await call("upload_media", { kind: "video", file_path: file, title: "Clip", profile_id: "1" });
+    await call("upload_media", { kind: "video", file_path: file, title: "Clip", profile_id: "1", confirm: true });
     expect(formOf(calls[1]!).file).toBe(Buffer.from("png").toString("base64"));
     expect((await call("upload_media", { kind: "photo", file_path: file, title: "x", album_id: "3", profile_id: "1" })).text).toMatch(/album_id/);
     expect((await call("set_profile_photo", { profile_id: "1" })).text).toMatch(/exactly one/);
@@ -325,7 +337,12 @@ describe("media", () => {
     expect((await call("update_media", { kind: "photo", id: "1" })).text).toMatch(/No fields/);
 
     const tags = await call("tag_media", { kind: "document", id: "1", profile_ids: ["1", "2"] });
-    expect(tags.data.results.map((r: { ok: boolean }) => r.ok)).toEqual([true, false]);
+    expect(tags.isError).toBe(true);
+    expect(tags.text).toMatch(/1 of 2 tag changes failed/);
+    expect(tags.text).toContain('"profile": "profile-1",\n      "ok": true');
+    const before = calls.length;
+    expect((await call("tag_media", { kind: "document", id: "1", profile_ids: ["1", "union-9"] })).text).toMatch(/Expected a profile id/);
+    expect(calls).toHaveLength(before);
     await call("add_comment", { kind: "photo", id: "2", text: "Nice" });
     expect((await call("delete_media", { kind: "photo", id: "2" })).text).toMatch(/confirm/);
     await call("delete_media", { kind: "photo", id: "2", confirm: true });
@@ -357,13 +374,36 @@ describe("upload policy", () => {
 });
 
 describe("every write tool is guarded", () => {
+  // Valid arguments for every write tool, so each call reaches the write guard instead of failing validation.
+  const WRITE_ARGS: Record<string, Record<string, unknown>> = {
+    update_profile: { profile_id: "1", first_name: "X" },
+    append_about_note: { profile_id: "1", note: "x" },
+    create_profile: { first_name: "X", confirm: true },
+    add_relative: { profile_id: "1", relation: "child", first_name: "X", confirm: true },
+    merge_profiles: { profile_id: "1", duplicate_profile_id: "2", confirm: true },
+    delete_profile: { profile_id: "1", confirm: true },
+    follow_profile: { profile_id: "1", follow: true },
+    update_union: { union_id: "5", marriage: { date: { year: 1900 } } },
+    add_to_union: { union_id: "5", role: "child", first_name: "X", confirm: true },
+    create_document: { title: "T", text: "x" },
+    upload_media: { kind: "photo", file_path: "/tmp/x.jpg", title: "T", confirm: true },
+    set_profile_photo: { profile_id: "1", photo_id: "2" },
+    update_media: { kind: "photo", id: "1", title: "T" },
+    tag_media: { kind: "photo", id: "1", profile_ids: ["1"] },
+    add_comment: { kind: "photo", id: "1", text: "x" },
+    delete_media: { kind: "photo", id: "1", confirm: true },
+    save_album: { name: "A" },
+    add_to_project: { project_id: "6", profile_ids: ["1"] },
+    update_project: { project_id: "6", name: "P" },
+    save_app_metadata: { data: { a: 1 } },
+  };
+
   it("read-only mode refuses all tools marked as writes, before any request", async () => {
     const { call, calls } = await setup([], { writeLevel: "readonly" });
     const writes = ALL_TOOLS.filter((t) => t.write);
-    expect(writes.length).toBeGreaterThanOrEqual(20);
+    expect(writes.map((t) => t.name).sort()).toEqual(Object.keys(WRITE_ARGS).sort());
     for (const t of writes) {
-      const res = await call(t.name, {});
-      expect(res.isError, t.name).toBe(true);
+      expect((await call(t.name, WRITE_ARGS[t.name])).text, t.name).toMatch(/read-only mode/);
     }
     expect(calls).toHaveLength(0);
   });
@@ -477,5 +517,51 @@ describe("auth tools", () => {
     const res = await call("auth_start");
     expect(res.data.listener_error).toMatch(/localhost/);
     expect(res.data.next_step).toMatch(/auth_complete/);
+  });
+});
+
+describe("QA regressions", () => {
+  it("geni_raw_get refuses percent-encoded and ;-separated paths that could hide a write", async () => {
+    const { call, calls } = await setup([], { writeLevel: "readonly" });
+    for (const path of ["profile-1/%64elete", "profile-1/%61dd-child", "profile-1;delete", "profile-1/x%2564elete", "profile-1/de\tlete", "profile-1/de\nlete", "profile-1/DE\rLETE"]) {
+      expect((await call("geni_raw_get", { path })).text, path).toMatch(/only reads/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("previews and raw reads keep cleared and empty values", async () => {
+    const { call } = await setup([
+      on("GET", "profile-1", () => json({ id: "profile-1", about_me: "Old." })),
+      on("GET", "profile-1/documents", () => json({ results: [] })),
+    ]);
+    const dry = await call("update_profile", { profile_id: "1", about_me: "", dry_run: true });
+    expect(dry.data.after).toEqual({ about_me: "" });
+    expect((await call("geni_raw_get", { path: "profile-1/documents" })).data).toEqual({ results: [] });
+  });
+
+  it("add_to_project checks every id before writing and reports a partial failure", async () => {
+    const { call, calls } = await setup([
+      on("POST", "project-6/add_profiles", () => json({ result: "ok" })),
+      on("POST", "project-6/add_documents", () => json({ error: { message: "nope" } }, 403)),
+    ]);
+    expect((await call("add_to_project", { project_id: "6", profile_ids: ["1"], document_ids: ["profile-2"] })).text).toMatch(
+      /Expected a document id/,
+    );
+    expect(calls).toHaveLength(0);
+    const res = await call("add_to_project", { project_id: "6", profile_ids: ["1"], document_ids: ["4"] });
+    expect(res.isError).toBe(true);
+    expect(res.text).toMatch(/profiles were added but adding documents failed/);
+    expect(res.text).toContain('"result": "ok"');
+  });
+
+  it("auth_complete needs the matching state while a login is pending", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ access_token: "fresh" }))));
+    const { call, config, tokens } = await setup([], { loggedIn: false });
+    Object.assign(config, { redirectUri: "https://example.com/cb" });
+    const state = new URL((await call("auth_start")).data.authorization_url).searchParams.get("state");
+    expect((await call("auth_complete", { code_or_url: "abc" })).text).toMatch(/full redirect URL/);
+    expect((await call("auth_complete", { code_or_url: "http://x/cb?code=abc" })).text).toMatch(/full redirect URL/);
+    expect(await tokens.load()).toBeNull();
+    expect((await call("auth_complete", { code_or_url: `http://x/cb?code=abc&state=${state}` })).data).toEqual({ logged_in: true });
   });
 });

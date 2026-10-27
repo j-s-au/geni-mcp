@@ -48,8 +48,10 @@ export function on(method: string, path: string, respond: (call: Call) => Respon
   return (call) => (call.method === method && call.url.pathname === `/api/${path}` ? respond(call) : undefined);
 }
 
+/** Sleeps return at once but move `now` forward, so waits that re-check the clock see the time pass. */
+let skippedMs = 0;
 export const instantClock: Clock & { slept: number[] } = Object.assign(
-  { now: () => Date.now(), sleep: async (ms: number) => void instantClock.slept.push(ms) },
+  { now: () => Date.now() + skippedMs, sleep: async (ms: number) => void (instantClock.slept.push(ms), (skippedMs += ms)) },
   { slept: [] as number[] },
 );
 

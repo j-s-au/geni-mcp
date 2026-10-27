@@ -2,7 +2,7 @@ import { mkdtempSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TokenStore } from "../src/auth/token-store.js";
 import { ConfigError, loadConfig } from "../src/config.js";
 import { encodeForm } from "../src/http/form.js";
@@ -107,6 +107,27 @@ describe("rate limiter", () => {
     expect(limiter.snapshot()).toEqual({});
     await expect(limiter.schedule(async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
     await expect(limiter.schedule(async () => 5)).resolves.toBe(5);
+  });
+
+  it("re-checks a pause that starts while a call is already waiting", async () => {
+    let t = 0;
+    const slept: number[] = [];
+    const wakes: Array<() => void> = [];
+    const clock: Clock = {
+      now: () => t,
+      sleep: (ms) => new Promise<void>((resolve) => void (slept.push(ms), wakes.push(() => ((t += ms), resolve())))),
+    };
+    const limiter = new RateLimiter(2000, clock);
+    const started: number[] = [];
+    await limiter.schedule(async () => void started.push(t));
+    const second = limiter.schedule(async () => void started.push(t));
+    await vi.waitFor(() => expect(slept).toEqual([2000]));
+    limiter.pause(5000);
+    wakes.shift()!();
+    await vi.waitFor(() => expect(slept).toEqual([2000, 3000]));
+    wakes.shift()!();
+    await second;
+    expect(started).toEqual([0, 5000]);
   });
 });
 

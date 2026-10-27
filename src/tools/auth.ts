@@ -80,8 +80,13 @@ export const authTools = [
     input: { code_or_url: z.string().min(1).describe("Authorization code or full redirect URL") },
     handler: async ({ code_or_url }, ctx) => {
       const { code, state } = extractCode(code_or_url);
-      if (state && pending && state !== pending.state) {
-        throw new OAuthError("That redirect belongs to an older login attempt. Run auth_start again.");
+      // While a login is pending its state must come back, or the code could belong to someone else's login.
+      if (pending && state !== pending.state) {
+        throw new OAuthError(
+          state
+            ? "That redirect belongs to an older login attempt. Run auth_start again."
+            : "Paste the full redirect URL from the browser's address bar, not just the code: it carries the login's state.",
+        );
       }
       await finishLogin(ctx, code);
       pending?.close?.();

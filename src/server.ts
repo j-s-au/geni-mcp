@@ -9,7 +9,7 @@ import { collectionTools } from "./tools/collections.js";
 import { mediaTools } from "./tools/media.js";
 import { profileReadTools } from "./tools/profiles-read.js";
 import { profileWriteTools } from "./tools/profiles-write.js";
-import type { ToolContext, ToolDef } from "./tools/shared.js";
+import { PartialFailureError, type ToolContext, type ToolDef } from "./tools/shared.js";
 import { unionTools } from "./tools/unions.js";
 
 export const SERVER_NAME = "geni";
@@ -27,16 +27,18 @@ export const ALL_TOOLS: readonly ToolDef[] = [
 const INSTRUCTIONS = `Geni.com genealogy API (the shared World Family Tree).
 - Start with auth_status; if not logged in, run auth_start and give the user the URL.
 - Requests are deliberately slow (one every ~2 s). Prefer get_ancestors (20 generations in one call) and get_profiles (50 at once) over many single lookups.
-- Geni is a shared tree: before any write, show the user the change (dry_run where available) and get approval. Structural changes (add_relative, add_to_union, create_profile, merge, delete) also need confirm: true and GENI_WRITE_LEVEL=full.
+- Geni is a shared tree: before any write, show the user the change (dry_run where available) and get approval. Structural changes (add_relative, add_to_union, create_profile, merge, delete) also need confirm: true and GENI_WRITE_LEVEL=full. Uploading a local file also needs confirm: true.
 - Profile ids can be given as profile-123, a Geni ID like 6999999999999999999, or a geni.com URL.`;
 
-export function toResult(value: unknown): CallToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(dropEmpty(value), null, 2) }] };
+/** Write previews and raw reads keep empty values: "" or [] can be the change or the answer. */
+export function toResult(value: unknown, keepEmpty = false): CallToolResult {
+  return { content: [{ type: "text", text: JSON.stringify(keepEmpty ? value : dropEmpty(value), null, 2) }] };
 }
 
 export function errorResult(err: unknown): CallToolResult {
   const message = err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
+  const details = err instanceof PartialFailureError ? `\n${JSON.stringify(err.details, null, 2)}` : "";
+  return { content: [{ type: "text", text: `Error: ${message}${details}` }], isError: true };
 }
 
 export function createServer(ctx: ToolContext): McpServer {
@@ -58,7 +60,8 @@ export function createServer(ctx: ToolContext): McpServer {
       async (args: Record<string, unknown>, extra: { signal?: AbortSignal }) => {
         try {
           if (def.write) assertWriteAllowed(ctx.config.writeLevel, def.write, def.name);
-          return toResult(await def.handler(args as never, { ...ctx, signal: extra.signal }));
+          const result = await def.handler(args as never, { ...ctx, signal: extra.signal });
+          return toResult(result, Boolean(def.write || def.keepEmpty));
         } catch (err) {
           return errorResult(err);
         }

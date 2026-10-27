@@ -53,10 +53,15 @@ export const unionTools = [
       relationship_modifier: z.enum(["adopt", "foster"]).optional().describe("role: child only"),
       ...Confirm,
     },
-    handler: async ({ union_id, role, confirm, names: _names, nicknames: _nicknames, title: _title, ...fields }, ctx) => {
+    handler: async ({ union_id, role, confirm, names, nicknames, title, ...fields }, ctx) => {
       const id = unionId(union_id);
+      // union/add-* does not accept names, nicknames or title; refuse rather than drop them unseen.
+      if (names !== undefined || nicknames !== undefined || title !== undefined) {
+        throw new Error(
+          "add_to_union does not accept names, nicknames or title. Leave them out, then set them with update_profile on the new profile.",
+        );
+      }
       assertConfirmed(confirm, "add_to_union", `add a new ${role} to ${id}`);
-      // union/add-* does not accept names, nicknames or title.
       const form = toForm(role === "child" ? fields : { ...fields, relationship_modifier: undefined });
       return auditedWrite(ctx, { tool: "add_to_union", target: id, request: { role, ...form } }, () =>
         ctx.client.post(`${id}/add-${role}`, form),

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { normalizeId, profileId, type GeniType } from "../ids.js";
 import { assertConfirmed } from "../safety/write-guard.js";
 import { readLocalFile } from "./files.js";
-import { uploadPolicy } from "./shared.js";
+import { PartialFailureError, uploadPolicy } from "./shared.js";
 import { auditedWrite, Confirm, DateSchema, DryRun, PageFields, FieldsParam, pageQuery, tool } from "./shared.js";
 
 const MediaKind = z.enum(["document", "photo", "video"]);
@@ -12,6 +12,13 @@ type Kind = z.infer<typeof MediaKind>;
 
 const ObjectId = z.string().describe("Object id, e.g. 'document-339953', or just the number");
 const FilePath = z.string().describe("Absolute path to a local file inside the upload folders (GENI_UPLOAD_DIRS, default ~/Documents)");
+
+/** Uploading a local file sends its contents to a shared tree, so it needs confirm: true like a structural change. */
+async function readConfirmedUpload(tool: string, filePath: string, confirm: boolean | undefined, ctx: Parameters<typeof uploadPolicy>[0]) {
+  const file = await readLocalFile(filePath, uploadPolicy(ctx));
+  assertConfirmed(confirm, tool, `upload ${file.name} (${file.bytes.length} bytes) to Geni`);
+  return file;
+}
 
 /** Geni wants dates on media writes as a JSON-serialised Date object. */
 const jsonDate = (date: z.infer<typeof DateSchema> | undefined) => (date ? JSON.stringify(date) : undefined);
@@ -81,10 +88,11 @@ export const mediaTools = [
       description: z.string().optional(),
       date: DateSchema.optional().describe("Date of the record itself"),
       labels: z.array(z.string()).optional(),
+      ...Confirm,
     },
-    handler: async ({ title, profile_id, file_path, text, source_url, description, date, labels }, ctx) => {
+    handler: async ({ title, profile_id, file_path, text, source_url, description, date, labels, confirm }, ctx) => {
       if (!file_path && !text && !source_url) throw new Error("Give at least one of file_path, text or source_url.");
-      const file = file_path ? await readLocalFile(file_path, uploadPolicy(ctx)) : undefined;
+      const file = file_path ? await readConfirmedUpload("create_document", file_path, confirm, ctx) : undefined;
       const form = {
         title,
         text,
@@ -117,10 +125,11 @@ export const mediaTools = [
       date: DateSchema.optional(),
       profile_id: z.string().optional(),
       album_id: z.string().optional().describe("Photo album id (photos without profile_id only)"),
+      ...Confirm,
     },
-    handler: async ({ kind, file_path, title, description, date, profile_id, album_id }, ctx) => {
+    handler: async ({ kind, file_path, title, description, date, profile_id, album_id, confirm }, ctx) => {
       if (profile_id && album_id) throw new Error("album_id only works without profile_id.");
-      const file = await readLocalFile(file_path, uploadPolicy(ctx));
+      const file = await readConfirmedUpload("upload_media", file_path, confirm, ctx);
       const logged = { title, description, date, album_id, file: `<${file.name}, ${file.bytes.length} bytes>` };
       if (profile_id) {
         const path = `${profileId(profile_id)}/add-${kind}`;
@@ -151,11 +160,12 @@ export const mediaTools = [
       title: z.string().optional(),
       description: z.string().optional(),
       date: DateSchema.optional(),
+      ...Confirm,
     },
-    handler: async ({ profile_id, file_path, photo_id, title, description, date }, ctx) => {
+    handler: async ({ profile_id, file_path, photo_id, title, description, date, confirm }, ctx) => {
       if (!file_path === !photo_id) throw new Error("Give exactly one of file_path or photo_id.");
       const id = profileId(profile_id);
-      const file = file_path ? await readLocalFile(file_path, uploadPolicy(ctx)) : undefined;
+      const file = file_path ? await readConfirmedUpload("set_profile_photo", file_path, confirm, ctx) : undefined;
       const form = {
         title,
         description,
@@ -216,9 +226,10 @@ export const mediaTools = [
     handler: async ({ kind, id, profile_ids, untag }, ctx) => {
       const nodeId = normalizeId(kind, id);
       const action = untag ? "untag" : "tag";
+      // Check every id before the first write, so a bad id cannot stop the batch halfway.
+      const pids = profile_ids.map(profileId);
       const results = [];
-      for (const raw of profile_ids) {
-        const pid = profileId(raw);
+      for (const pid of pids) {
         try {
           await auditedWrite(ctx, { tool: "tag_media", target: nodeId, request: { action, profile: pid } }, () =>
             ctx.client.post(`${nodeId}/${action}/${pid}`),
@@ -227,6 +238,10 @@ export const mediaTools = [
         } catch (err) {
           results.push({ profile: pid, ok: false, error: err instanceof Error ? err.message : String(err) });
         }
+      }
+      const failed = results.filter((r) => !r.ok).length;
+      if (failed > 0) {
+        throw new PartialFailureError(`${failed} of ${results.length} ${action} changes failed`, { target: nodeId, action, results });
       }
       return { target: nodeId, action, results };
     },

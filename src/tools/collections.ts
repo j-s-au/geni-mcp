@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { normalizeId, profileId } from "../ids.js";
-import { auditedWrite, FieldsParam, PageFields, pageQuery, tool } from "./shared.js";
+import { auditedWrite, FieldsParam, PageFields, pageQuery, PartialFailureError, tool } from "./shared.js";
 
 const ProjectId = z.string().describe("Project id, e.g. 'project-6' or 6");
 
@@ -69,19 +69,26 @@ export const collectionTools = [
     handler: async ({ project_id, profile_ids, document_ids }, ctx) => {
       if (!profile_ids?.length && !document_ids?.length) throw new Error("Give profile_ids and/or document_ids.");
       const id = normalizeId("project", project_id);
+      // Check every id before the first write, so a bad id cannot leave the project half-updated.
+      // The docs mix node ids and GUIDs as "g<guid>", not "profile-g<guid>".
+      const profiles = profile_ids?.map((p) => profileId(p).replace(/^profile-(g\d+)$/, "$1")).join(",");
+      const documents = document_ids?.map((d) => normalizeId("document", d)).join(",");
       const out: Record<string, unknown> = {};
-      if (profile_ids?.length) {
-        // The docs mix node ids and GUIDs as "g<guid>", not "profile-g<guid>".
-        const ids = profile_ids.map((p) => profileId(p).replace(/^profile-(g\d+)$/, "$1")).join(",");
-        out.profiles = await auditedWrite(ctx, { tool: "add_to_project", target: id, request: { profile_ids: ids } }, () =>
-          ctx.client.post(`${id}/add_profiles`, { profile_ids: ids }),
+      if (profiles) {
+        out.profiles = await auditedWrite(ctx, { tool: "add_to_project", target: id, request: { profile_ids: profiles } }, () =>
+          ctx.client.post(`${id}/add_profiles`, { profile_ids: profiles }),
         );
       }
-      if (document_ids?.length) {
-        const ids = document_ids.map((d) => normalizeId("document", d)).join(",");
-        out.documents = await auditedWrite(ctx, { tool: "add_to_project", target: id, request: { ids } }, () =>
-          ctx.client.post(`${id}/add_documents`, { ids }),
-        );
+      if (documents) {
+        try {
+          out.documents = await auditedWrite(ctx, { tool: "add_to_project", target: id, request: { ids: documents } }, () =>
+            ctx.client.post(`${id}/add_documents`, { ids: documents }),
+          );
+        } catch (err) {
+          if (!profiles) throw err;
+          const reason = err instanceof Error ? err.message : String(err);
+          throw new PartialFailureError(`The profiles were added but adding documents failed: ${reason}`, out);
+        }
       }
       return out;
     },
@@ -195,9 +202,13 @@ export const collectionTools = [
       path: z.string().min(1).describe("Path under https://www.geni.com/api/, e.g. 'profile-123/documents'"),
       query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
     },
+    keepEmpty: true,
     handler: async ({ path, query }, ctx) => {
-      const segments = path.split(/[/?#]/).map((p) => p.toLowerCase());
-      if (segments.some((p) => WRITE_SEGMENT.test(p))) {
+      // Encoded characters, ";", whitespace and control characters (which URL parsing strips) could
+      // spell a write segment, so refuse them and check the path of the URL that would really be sent.
+      const sent = new URL(ctx.client.buildUrl(path)).pathname;
+      const segments = [...path.split(/[/?#]/), ...sent.split("/")].map((p) => p.toLowerCase());
+      if (/[\u0000- \u007f%;]/.test(path) || segments.some((p) => WRITE_SEGMENT.test(p))) {
         throw new Error("geni_raw_get only reads. Use the matching write tool for this endpoint.");
       }
       return ctx.client.get(path, query);

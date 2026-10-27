@@ -183,6 +183,16 @@ describe("callback server", () => {
     expect(() => waitForCallback("https://example.com/cb", 1000)).toThrow(/localhost/);
   });
 
+  it("ignores a denial or code that does not carry the login's state", async () => {
+    const listener = waitForCallback("http://127.0.0.1:38914/cb", 5000, "good");
+    await listener.ready;
+    expect((await fetch("http://127.0.0.1:38914/cb?message=user+canceled")).status).toBe(400);
+    expect((await fetch("http://127.0.0.1:38914/cb?message=x&state=bad")).status).toBe(400);
+    expect((await fetch("http://127.0.0.1:38914/cb?code=abc&state=bad")).status).toBe(400);
+    await fetch("http://127.0.0.1:38914/cb?message=user+canceled&state=good");
+    expect((await listener.result).error).toBe("user canceled");
+  });
+
   it("times out", async () => {
     const listener = waitForCallback("http://127.0.0.1:38913/cb", 50);
     await listener.ready;

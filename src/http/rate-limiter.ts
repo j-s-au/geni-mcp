@@ -41,7 +41,12 @@ export class RateLimiter {
     return run.then(fn);
   }
 
+  /** Re-checks after every sleep: a pause or empty window can start while this call is waiting. */
   private async waitTurn(): Promise<void> {
+    for (let wait = this.nextWait(); wait > 0; wait = this.nextWait()) await this.clock.sleep(wait);
+  }
+
+  private nextWait(): number {
     const now = this.clock.now();
     let wait = Math.max(this.lastStart + this.minIntervalMs, this.pausedUntil) - now;
     const { remaining, windowSeconds, observedAt } = this.state;
@@ -49,7 +54,7 @@ export class RateLimiter {
       const windowEnd = observedAt + (windowSeconds ?? 10) * 1000;
       wait = Math.max(wait, windowEnd - now);
     }
-    if (wait > 0) await this.clock.sleep(wait);
+    return wait;
   }
 
   /** Holds every queued and future call until `ms` from now (after throttling). */

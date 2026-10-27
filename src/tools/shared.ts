@@ -35,6 +35,8 @@ export interface ToolDef<S extends z.ZodRawShape = z.ZodRawShape> {
   /** Omitted for read-only tools. */
   readonly write?: WriteTier;
   readonly destructive?: boolean;
+  /** Return the result as-is instead of dropping empty values (always the case for writes). */
+  readonly keepEmpty?: boolean;
   readonly handler: (args: z.infer<z.ZodObject<S>>, ctx: ToolContext) => Promise<unknown>;
 }
 
@@ -151,6 +153,16 @@ export async function auditedWrite<T>(
   } catch (err) {
     await ctx.audit.record({ ...entry, outcome: "error", error: err instanceof Error ? err.message : String(err) });
     throw err;
+  }
+}
+
+/** Some items of a batch write failed: reported as an error that still shows what was done. */
+export class PartialFailureError extends Error {
+  constructor(
+    message: string,
+    readonly details: unknown,
+  ) {
+    super(message);
   }
 }
 

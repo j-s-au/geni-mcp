@@ -52,7 +52,8 @@ export function waitForCallback(
       const state = url.searchParams.get("state") ?? undefined;
       const denial = url.searchParams.get("message") ?? url.searchParams.get("status") ?? undefined;
       const stateOk = expectedState === undefined || state === expectedState;
-      if ((code && !stateOk) || (!code && !denial)) {
+      // Denials need the state too, so a stray local request cannot cancel the login.
+      if (!stateOk || (!code && !denial)) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
         res.end(PAGE("Not a valid Geni login", "This request did not come from the current Geni login and was ignored."));
         return;
