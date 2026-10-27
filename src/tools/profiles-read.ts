@@ -23,8 +23,6 @@ const ProfileIdParam = z
   .describe("Profile id: 'profile-123', a Geni ID like '6999999999999999999', 'g6000…', or a geni.com profile URL");
 
 const MAX_PATH_WAIT_SECONDS = 60;
-// Geni only serves profile/ancestors to apps it has approved; others climb immediate-family instead.
-const UNAPPROVED_APP = /approved client app required/i;
 const WALK_MAX_GENERATIONS = 6;
 const PATH_POLL_INTERVAL_MS = 5_000;
 
@@ -45,20 +43,48 @@ function mergeNodes(into: Record<string, GeniNode>, nodes: Record<string, GeniNo
   }
 }
 
+/**
+ * Geni only serves profile/ancestors to apps it has approved. It refuses others with a 403
+ * whose wording varies ("Approved client app required", "ApiException: Permission denied"),
+ * so any plain 403 means: climb immediate-family instead. Blocks and token problems are not plain.
+ */
+function ancestorsRefused(err: unknown): boolean {
+  return err instanceof GeniApiError && err.status === 403 && err.kind === "api";
+}
+
+/** A relative the walk could not open (private or deleted profile); the walk goes on without them. */
+function unreadable(err: unknown): boolean {
+  return err instanceof GeniApiError && (err.kind === "not_found" || (err.status === 403 && err.kind === "api"));
+}
+
+interface WalkResult extends FamilyResponse {
+  skipped: string[];
+}
+
 /** Builds an ancestors-shaped response from one immediate-family request per person. */
-async function walkAncestors(ctx: ToolContext, root: string, gens: number): Promise<FamilyResponse> {
+async function walkAncestors(ctx: ToolContext, root: string, gens: number): Promise<WalkResult> {
   const nodes: Record<string, GeniNode> = {};
   let focus: GeniNode | undefined;
   const seen = new Set<string>();
+  const skipped: string[] = [];
   let frontier = [root];
   for (let depth = 0; depth < gens && frontier.length > 0; depth++) {
     const next: string[] = [];
     for (const id of frontier) {
       checkCancelled(ctx);
-      const response = await ctx.client.get<FamilyResponse>(`${id}/immediate-family`, {
-        only_ids: true,
-        fields: SUMMARY_FIELDS,
-      });
+      let response: FamilyResponse;
+      try {
+        response = await ctx.client.get<FamilyResponse>(`${id}/immediate-family`, {
+          only_ids: true,
+          fields: SUMMARY_FIELDS,
+        });
+      } catch (err) {
+        // The person asked about must be readable; an unreadable ancestor just ends that line.
+        if (depth === 0 || !unreadable(err)) throw err;
+        skipped.push(id);
+        seen.add(id);
+        continue;
+      }
       mergeNodes(nodes, response.nodes ?? {});
       const graph = new FamilyGraph(response);
       const self = nodeIdFor(graph, id);
@@ -68,7 +94,7 @@ async function walkAncestors(ctx: ToolContext, root: string, gens: number): Prom
     }
     frontier = [...new Set(next)];
   }
-  return { focus, nodes };
+  return { focus, nodes, skipped };
 }
 
 export async function fetchFamily(ctx: ToolContext, id: string): Promise<FamilyGraph> {
@@ -150,7 +176,8 @@ export const profileReadTools = [
       "(1 = the person, 2 = father, 3 = mother, 4 = paternal grandfather, ...). 'missing' lists the " +
       "numbers whose child is on Geni but who are not. Use raw: true for Geni's unprocessed response. " +
       `If Geni has not approved this app for the ancestors endpoint, the tool climbs the tree one ` +
-      `person per request instead (at most ${WALK_MAX_GENERATIONS} generations, about 2 s per person).`,
+      `person per request instead (at most ${WALK_MAX_GENERATIONS} generations; each person waits for ` +
+      `Geni's rate limit, which can be 10 s per request).`,
     input: {
       profile_id: ProfileIdParam,
       generations: z.number().int().min(1).max(20).optional().describe("Generations above the person (default 5)"),
@@ -162,13 +189,14 @@ export const profileReadTools = [
       let gens = requested;
       let method = "ancestors endpoint";
       let response: FamilyResponse;
+      let skipped: string[] = [];
       try {
         response = await ctx.client.get<FamilyResponse>(`${id}/ancestors`, { generations: gens, only_ids: true });
       } catch (err) {
-        if (!(err instanceof GeniApiError) || !UNAPPROVED_APP.test(err.message)) throw err;
+        if (!ancestorsRefused(err)) throw err;
         gens = Math.min(requested, WALK_MAX_GENERATIONS);
-        method = "walked immediate-family (app not approved for the ancestors endpoint)";
-        response = await walkAncestors(ctx, id, gens);
+        method = `walked immediate-family (ancestors endpoint refused: ${(err as Error).message})`;
+        ({ skipped, ...response } = await walkAncestors(ctx, id, gens));
       }
       if (raw) return response;
       const { rows, missing } = buildAhnentafel(new FamilyGraph(response), gens + 1);
@@ -178,6 +206,7 @@ export const profileReadTools = [
         note: gens < requested ? `Capped at ${gens} generations because each person costs one request.` : undefined,
         count: rows.length,
         missing,
+        unreadable: skipped,
         ancestors: rows,
       });
     },

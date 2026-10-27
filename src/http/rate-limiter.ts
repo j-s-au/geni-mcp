@@ -1,6 +1,6 @@
-// Serialises API calls and spaces them out. Geni allows 40 requests per 10 s
-// for user tokens, but this server is deliberately far slower by default and
-// also honours the X-API-Rate-* headers Geni returns.
+// Serialises API calls and spaces them out. Geni's rate_limits page gives no
+// numbers and says limits change without notice, so the spacing follows the
+// X-API-Rate-* headers Geni returns, never faster than the configured minimum.
 
 export interface RateState {
   readonly limit?: number;
@@ -30,15 +30,23 @@ export class RateLimiter {
     private readonly clock: Clock = realClock,
   ) {}
 
-  /** Runs `fn` once every earlier call has started and the spacing rules allow. */
+  /**
+   * Runs `fn` once every earlier call has finished and the spacing rules allow.
+   * Waiting for the earlier call to finish (not just start) means its rate headers,
+   * observed inside `fn`, are seen before the next call decides how long to wait.
+   */
   schedule<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.then(async () => {
       await this.waitTurn();
       this.lastStart = this.clock.now();
+      return fn();
     });
-    // The queue only tracks start order; failures must not block later calls.
-    this.queue = run.catch(() => undefined);
-    return run.then(fn);
+    // Failures must not block later calls.
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Re-checks after every sleep: a pause or empty window can start while this call is waiting. */
@@ -48,8 +56,11 @@ export class RateLimiter {
 
   private nextWait(): number {
     const now = this.clock.now();
-    let wait = Math.max(this.lastStart + this.minIntervalMs, this.pausedUntil) - now;
-    const { remaining, windowSeconds, observedAt } = this.state;
+    const { limit, remaining, windowSeconds, observedAt } = this.state;
+    // Spread calls over the advertised window so it never runs dry.
+    const advertisedMs = limit && limit > 0 && windowSeconds ? (windowSeconds * 1000) / limit : 0;
+    const spacing = Math.max(this.minIntervalMs, advertisedMs);
+    let wait = Math.max(this.lastStart + spacing, this.pausedUntil) - now;
     if (remaining !== undefined && remaining <= 0 && observedAt !== undefined) {
       const windowEnd = observedAt + (windowSeconds ?? 10) * 1000;
       wait = Math.max(wait, windowEnd - now);

@@ -34,7 +34,7 @@ An MCP server for the [Geni.com](https://www.geni.com) genealogy API. It covers 
 - **Every write** is appended to `~/.config/geni-mcp/audit.jsonl` with a timestamp, the target, the request, and the earlier values where they were fetched. Uploaded file contents are never logged.
 - **Uploads** of a local file need `confirm: true`; without it the tool names the file and its size and sends nothing. Files come only from the upload folders (`GENI_UPLOAD_DIRS`, default `~/Documents`). Only known image, PDF, text and video types are accepted. Hidden files and the server's config folder are always refused, so text on a Geni profile can't trick Claude into publishing your private files.
 - **Pacing:**
-  - Requests are serialised and spaced 2 s apart by default; Geni allows 40 per 10 s.
+  - Requests are serialised and spaced at least 2 s apart, or `X-API-Rate-Window / X-API-Rate-Limit` if that is longer (Geni says limits change without notice, so the headers decide).
   - The server honours Geni's `X-API-Rate-*` headers, and pauses the whole queue when throttled.
   - Every request times out after 60 s.
 - **Blocks:** if Geni returns an IP-block page, the server refuses all further calls for 30 minutes.
@@ -115,6 +115,9 @@ Confirmed live on 28 Oct 2026:
 - `immediate-family` returns `{focus, nodes}`, with profiles and unions linked by `edges` (`rel: partner | child`) on both sides. Nodes are keyed by numeric id even when you ask by GUID.
 - Batch `ids=` returns `{results: [...]}`, not in request order.
 - Errors look like `{error: {type, message}}`, e.g. 403 `ApiException: Approved client app required`.
+- `ApiException: Permission denied` (403) is the other refusal wording seen for `profile/ancestors`; any plain 403 there triggers the walk.
+- In practice this app's user token gets `X-API-Rate-Limit: 1`, `X-API-Rate-Window: 10` (1 request per 10 s, not the documented 40), so expect about 10 s per call. 429 body: `ApiException: Rate limit exceeded.`
+- `platform/oauth/validate_token` needs `?access_token=`; with only a Bearer header it answers 400 `invalid_token`.
 - **`profile/ancestors` needs an app approved by Geni.** Until then `get_ancestors` climbs `immediate-family` one person per request, capped at 6 generations.
 - Geni's firewall blocks a `localhost` redirect URI (see Setup).
 

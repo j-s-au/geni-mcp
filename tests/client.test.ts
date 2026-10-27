@@ -43,6 +43,16 @@ describe("GeniClient", () => {
     expect(instantClock.slept).toContain(10_000);
   });
 
+  it("holds the next queued call until the window Geni reports has passed", async () => {
+    let n = 0;
+    const { client } = await clientWith([
+      () => json({ ok: ++n }, 200, { "X-API-Rate-Limit": "1", "X-API-Rate-Remaining": "0", "X-API-Rate-Window": "10" }),
+    ]);
+    instantClock.slept.length = 0;
+    await Promise.all([client.get("user"), client.get("user")]);
+    expect(instantClock.slept.some((ms) => ms >= 9_000)).toBe(true);
+  });
+
   it("gives up after maxRetries rate-limit responses", async () => {
     const { client } = await clientWith([() => new Response("slow down", { status: 429, headers: { "Retry-After": "1" } })]);
     await expect(client.get("user")).rejects.toMatchObject({ kind: "rate_limit", status: 429 });
@@ -155,6 +165,15 @@ describe("oauth", () => {
     expect(await tokenCheck(config, "validate_token", "t", ok.fn)).toEqual({ result: "OK" });
     const text = fakeFetch([() => new Response("nope", { status: 401 })]);
     expect(await tokenCheck(config, "invalidate_token", "t", text.fn)).toEqual({ status: 401, body: "nope" });
+  });
+
+  it("sends the token as the access_token query parameter, not a Bearer header", async () => {
+    const ok = fakeFetch([() => json({ result: "OK" })]);
+    await tokenCheck(config, "validate_token", "t0k", ok.fn);
+    const sent = ok.calls[0]!;
+    expect(sent.url.pathname).toBe("/platform/oauth/validate_token");
+    expect(sent.url.searchParams.get("access_token")).toBe("t0k");
+    expect(sent.headers.Authorization).toBeUndefined();
   });
 
   it("extracts codes from pasted input", () => {

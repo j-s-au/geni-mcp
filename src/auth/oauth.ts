@@ -75,16 +75,22 @@ export function refreshTokens(config: Config, refreshToken: string, fetchFn: Fet
   return requestToken(config, { grant_type: "refresh_token", refresh_token: refreshToken }, fetchFn, now);
 }
 
-/** Calls validate_token or invalidate_token and returns the raw JSON reply. */
+/**
+ * Calls validate_token or invalidate_token and returns the raw JSON reply.
+ * These endpoints want the token as the `access_token` query parameter: sent only
+ * as a Bearer header, Geni answers 400 invalid_token even for a working token.
+ */
 export async function tokenCheck(
   config: Config,
   action: "validate_token" | "invalidate_token",
   accessToken: string,
   fetchFn: FetchFn = fetch,
 ): Promise<unknown> {
-  const res = await fetchFn(`${config.oauthBase}/${action}`, {
+  const url = new URL(`${config.oauthBase}/${action}`);
+  url.searchParams.set("access_token", accessToken);
+  const res = await fetchFn(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
   });
   const text = await res.text();
