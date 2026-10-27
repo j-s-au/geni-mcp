@@ -524,8 +524,11 @@ describe("QA regressions", () => {
   it("geni_raw_get refuses percent-encoded and ;-separated paths that could hide a write", async () => {
     const { call, calls } = await setup([], { writeLevel: "readonly" });
     for (const path of ["profile-1/%64elete", "profile-1/%61dd-child", "profile-1;delete", "profile-1/x%2564elete", "profile-1/de\tlete", "profile-1/de\nlete", "profile-1/DE\rLETE"]) {
-      expect((await call("geni_raw_get", { path })).text, path).toMatch(/only reads/);
+      expect((await call("geni_raw_get", { path })).text, path).toMatch(/path cannot contain %, ;, spaces or control characters/);
     }
+    const query = await call("geni_raw_get", { path: "profile-1/documents?q=a%20b" });
+    expect(query.text).toMatch(/Pass query parameters in the query argument/);
+    expect(query.text).not.toMatch(/write tool/);
     expect(calls).toHaveLength(0);
   });
 

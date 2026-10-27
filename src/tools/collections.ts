@@ -206,9 +206,15 @@ export const collectionTools = [
     handler: async ({ path, query }, ctx) => {
       // Encoded characters, ";", whitespace and control characters (which URL parsing strips) could
       // spell a write segment, so refuse them and check the path of the URL that would really be sent.
+      if (/[\u0000- \u007f%;]/.test(path)) {
+        throw new Error(
+          "geni_raw_get path cannot contain %, ;, spaces or control characters. " +
+            "Pass query parameters in the query argument, unencoded, e.g. query: {\"q\": \"a b\"}.",
+        );
+      }
       const sent = new URL(ctx.client.buildUrl(path)).pathname;
       const segments = [...path.split(/[/?#]/), ...sent.split("/")].map((p) => p.toLowerCase());
-      if (/[\u0000- \u007f%;]/.test(path) || segments.some((p) => WRITE_SEGMENT.test(p))) {
+      if (segments.some((p) => WRITE_SEGMENT.test(p))) {
         throw new Error("geni_raw_get only reads. Use the matching write tool for this endpoint.");
       }
       return ctx.client.get(path, query);
