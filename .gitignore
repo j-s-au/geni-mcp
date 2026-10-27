@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+tokens.json
+docs/geni-api-reference.md
