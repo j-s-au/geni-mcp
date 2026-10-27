@@ -80,6 +80,56 @@ describe("profile reads", () => {
     expect(capped.data).toMatchObject({ generations: 6, note: expect.stringMatching(/Capped/) });
   });
 
+  it.each([
+    ["a Geni ID", "6000000043193929304"],
+    ["a profile URL", "https://www.geni.com/people/Jan-Botha/6000000043193929304"],
+    ["a profile-g id", "profile-g6000000043193929304"],
+  ])("get_ancestors walks on a 'Permission denied' 403 when given %s", async (_label, profile_id) => {
+    const denied = json({ error: { type: "ApiException", message: "Permission denied" } }, 403);
+    const route = (c: { url: URL }) => {
+      if (c.url.pathname.endsWith("/ancestors")) return denied.clone();
+      const id = c.url.pathname.match(/(profile-g?\d+)\/immediate-family/)?.[1];
+      // Geni answers a GUID request with numeric ids.
+      return id ? json({ ...ancestorsResponse, focus: { id: id.startsWith("profile-g") ? "profile-1" : id } }) : undefined;
+    };
+    const { call, calls } = await setup([route]);
+    const res = await call("get_ancestors", { profile_id, generations: 2 });
+    expect(res.isError).toBe(false);
+    expect(res.data.method).toMatch(/walked.*Permission denied/);
+    expect(res.data.ancestors.map((r: { ahnentafel: number }) => r.ahnentafel)).toEqual([1, 2, 3, 4, 5]);
+    expect(calls.map((c) => c.url.pathname.replace("/api/", ""))).toEqual([
+      "profile-g6000000043193929304/ancestors",
+      "profile-g6000000043193929304/immediate-family",
+      "profile-2/immediate-family",
+      "profile-3/immediate-family",
+    ]);
+  });
+
+  it("get_ancestors walk skips an unreadable ancestor but not an unreadable root", async () => {
+    const denied = json({ error: { type: "ApiException", message: "Permission denied" } }, 403);
+    const route = (c: { url: URL }) => {
+      if (c.url.pathname.endsWith("/ancestors") || c.url.pathname.includes("profile-3/")) return denied.clone();
+      const id = c.url.pathname.match(/(profile-\d+)\/immediate-family/)?.[1];
+      return id ? json({ ...ancestorsResponse, focus: { id } }) : undefined;
+    };
+    const { call } = await setup([route]);
+    const res = await call("get_ancestors", { profile_id: "1", generations: 2 });
+    expect(res.data.unreadable).toEqual(["profile-3"]);
+    expect(res.data.ancestors.map((r: { ahnentafel: number }) => r.ahnentafel)).toEqual([1, 2, 3, 4, 5]);
+
+    const root = await call("get_ancestors", { profile_id: "3" });
+    expect(root.isError).toBe(true);
+    expect(root.text).toMatch(/Permission denied/);
+  });
+
+  it("get_ancestors does not walk on a rate-limit 403", async () => {
+    const { call, calls } = await setup([
+      on("GET", "profile-1/ancestors", () => json({ error: { type: "ApiException", message: "Rate limit exceeded." } }, 403)),
+    ]);
+    expect((await call("get_ancestors", { profile_id: "1" })).isError).toBe(true);
+    expect(calls.every((c) => c.url.pathname.endsWith("/ancestors"))).toBe(true);
+  });
+
   it("get_ancestors passes on other errors", async () => {
     const { call } = await setup([on("GET", "profile-1/ancestors", () => json({ error: "boom" }, 500))]);
     expect((await call("get_ancestors", { profile_id: "1" })).isError).toBe(true);

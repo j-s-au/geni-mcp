@@ -115,6 +115,9 @@ Confirmed live on 28 Oct 2026:
 - `immediate-family` returns `{focus, nodes}`, with profiles and unions linked by `edges` (`rel: partner | child`) on both sides. Nodes are keyed by numeric id even when you ask by GUID.
 - Batch `ids=` returns `{results: [...]}`, not in request order.
 - Errors look like `{error: {type, message}}`, e.g. 403 `ApiException: Approved client app required`.
+- `ApiException: Permission denied` (403) is the other refusal wording seen for `profile/ancestors`; any plain 403 there triggers the walk.
+- In practice this app's user token gets `X-API-Rate-Limit: 1`, `X-API-Rate-Window: 10` (1 request per 10 s, not the documented 40), so expect about 10 s per call. 429 body: `ApiException: Rate limit exceeded.`
+- `platform/oauth/validate_token` needs `?access_token=`; with only a Bearer header it answers 400 `invalid_token`.
 - **`profile/ancestors` needs an app approved by Geni.** Until then `get_ancestors` climbs `immediate-family` one person per request, capped at 6 generations.
 - Geni's firewall blocks a `localhost` redirect URI (see Setup).
 

@@ -100,6 +100,28 @@ describe("rate limiter", () => {
     expect(slept).toEqual([10_000]);
   });
 
+  it("sees the previous call's rate headers before starting the next, even when it answers slowly", async () => {
+    const { clock, slept } = fakeClock();
+    const limiter = new RateLimiter(2000, clock);
+    let answer!: () => void;
+    const first = limiter.schedule(
+      () =>
+        new Promise<void>((resolve) => {
+          answer = () => {
+            limiter.observe(new Headers({ "X-API-Rate-Limit": "1", "X-API-Rate-Remaining": "0", "X-API-Rate-Window": "10" }));
+            resolve();
+          };
+        }),
+    );
+    let secondStarted = false;
+    const second = limiter.schedule(async () => void (secondStarted = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(secondStarted).toBe(false);
+    answer();
+    await Promise.all([first, second]);
+    expect(slept).toEqual([10_000]);
+  });
+
   it("ignores responses without rate headers and keeps going after a failure", async () => {
     const { clock } = fakeClock();
     const limiter = new RateLimiter(0, clock);

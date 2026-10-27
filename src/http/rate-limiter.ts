@@ -30,15 +30,23 @@ export class RateLimiter {
     private readonly clock: Clock = realClock,
   ) {}
 
-  /** Runs `fn` once every earlier call has started and the spacing rules allow. */
+  /**
+   * Runs `fn` once every earlier call has finished and the spacing rules allow.
+   * Waiting for the earlier call to finish (not just start) means its rate headers,
+   * observed inside `fn`, are seen before the next call decides how long to wait.
+   */
   schedule<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.queue.then(async () => {
       await this.waitTurn();
       this.lastStart = this.clock.now();
+      return fn();
     });
-    // The queue only tracks start order; failures must not block later calls.
-    this.queue = run.catch(() => undefined);
-    return run.then(fn);
+    // Failures must not block later calls.
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Re-checks after every sleep: a pause or empty window can start while this call is waiting. */

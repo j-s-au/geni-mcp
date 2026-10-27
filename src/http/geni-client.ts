@@ -77,22 +77,26 @@ export class GeniClient {
     let refreshedAfter401 = false;
 
     for (let attempt = 0; ; attempt++) {
-      const res = await this.limiter.schedule(() => this.send(path, options, tokens.accessToken));
-      this.limiter.observe(res.headers);
-      const text = await res.text();
+      const accessToken = tokens.accessToken;
+      // Headers, body and any pause are handled inside the limiter's turn, so the next
+      // queued call sees them before it decides how long to wait.
+      const { res, text, failure } = await this.limiter.schedule(async () => {
+        const res = await this.send(path, options, accessToken);
+        this.limiter.observe(res.headers);
+        const text = await res.text();
+        const failure = res.ok ? undefined : classify(res.status, text);
+        // Pause the whole queue, not just this call, so other requests stop too.
+        if (failure?.kind === "rate_limit") this.limiter.pause(backoffMs(res.headers, attempt));
+        return { res, text, failure };
+      });
 
-      if (res.ok) return parseJson<T>(text, res.status);
+      if (!failure) return parseJson<T>(text, res.status);
 
-      const failure = classify(res.status, text);
       if (failure.kind === "blocked") {
         this.blockedUntil = this.clock.now() + BLOCK_COOLDOWN_MS;
         this.blockedMessage = failure.message;
       }
-      if (failure.kind === "rate_limit") {
-        // Pause the whole queue, not just this call, so other requests stop too.
-        this.limiter.pause(backoffMs(res.headers, attempt));
-        if (attempt < this.config.maxRetries) continue;
-      }
+      if (failure.kind === "rate_limit" && attempt < this.config.maxRetries) continue;
       if (failure.kind === "auth" && !refreshedAfter401 && tokens.refreshToken) {
         refreshedAfter401 = true;
         tokens = await this.refreshAfterFailure(tokens);
